@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
@@ -45,10 +46,33 @@ namespace Lokad.ILPack.Metadata
             _typeRefHandles = new Dictionary<Type, TypeReferenceHandle>();
             _typeSpecHandles = new Dictionary<Type, TypeSpecificationHandle>();
 
-            CreateReferencedAssemblies(SourceAssembly.GetReferencedAssemblies());
+            CreateReferencedAssemblies(new ReferencedAssembliesProvider(SourceAssembly).Get().ToArray());
         }
 
 
+        
+        class ReferencedAssembliesProvider
+        {
+            private readonly Assembly _asm;
+
+            public ReferencedAssembliesProvider(Assembly asm)
+            {
+                _asm = asm;
+            }
+
+            public IEnumerable<AssemblyName> Get()
+            {
+                foreach (var ra in _asm.GetReferencedAssemblies())
+                {
+                    if (ra.Name == "System.Private.CoreLib")
+                        yield return new AssemblyName(
+                            "mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+                    else
+                        yield return ra;
+                }
+            }
+        }
+        
         public Assembly SourceAssembly { get; }
         public MetadataBuilder Builder { get; }
         public BlobBuilder ILBuilder { get; }

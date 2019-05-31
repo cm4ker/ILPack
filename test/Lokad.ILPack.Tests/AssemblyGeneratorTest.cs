@@ -6,52 +6,35 @@ using System.Net.Http;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.Serialization;
-using Lokad.ILPack.Metadata;
 using Xunit;
 
 namespace Lokad.ILPack.Tests
 {
     public class AssemblyGeneratorTest
     {
-        private static readonly string _basePath;
-
-        static AssemblyGeneratorTest()
+        private static string SerializeAssembly(Assembly asm, string fileName)
         {
-            _basePath = Path.Combine(Directory.GetCurrentDirectory(), "generated");
-            Directory.CreateDirectory(_basePath);
-        }
-
-        private static string GetPathForAssembly(string fileName) => Path.Combine(_basePath, fileName);
-
-        private static void SerializeAssembly(Assembly assembly, string fileName)
-        {
-            var path = GetPathForAssembly(fileName);
+            var current = Directory.GetCurrentDirectory();
+            var path = Path.Combine(current, fileName);
 
             var generator = new AssemblyGenerator();
-            generator.GenerateAssembly(assembly, path);
+            generator.GenerateAssembly(asm, path);
+
+            return path;
         }
 
-        private static Type[] VerifyAssembly(string fileName)
+        private static void VerifyAssembly(string path)
         {
-            var path = GetPathForAssembly(fileName);
-
             // Unfortunately, until .NET Core 3.0 we cannot unload assemblies.
-            var assembly = Assembly.LoadFile(path);
-            return assembly.GetTypes(); // force to access metadata
+            var asm = Assembly.LoadFile(path);
+            var types = asm.GetTypes(); // force to access metadata
         }
 
-        private static Type[] SerializeAndVerifyAssembly(Assembly assembly, string fileName)
+        private static string SerializeAndVerifyAssembly(Assembly asm, string fileName)
         {
-            SerializeAssembly(assembly, fileName);
-            return VerifyAssembly(fileName);
-        }
-
-        private static Assembly LoadAssembly(string fileName)
-        {
-            var path = GetPathForAssembly(fileName);
-
-            // Unfortunately, until .NET Core 3.0 we cannot unload assemblies.
-            return Assembly.LoadFile(path);
+            var path = SerializeAssembly(asm, fileName);
+            VerifyAssembly(path);
+            return path;
         }
 
         private static PropertyBuilder CreateProperty(TypeBuilder typeBuilder, Type propertyType, string propertyName,
@@ -89,8 +72,8 @@ namespace Lokad.ILPack.Tests
             {
                 // Define set method
                 var propertySetterName = $"set_${propertyName}";
-                var propertySetter = typeBuilder.DefineMethod(propertySetterName, MethodAttributes.Public, null,
-                    new Type[] { propertyType });
+                var propertySetter = typeBuilder.DefineMethod(propertySetterName, MethodAttributes.Public, propertyType,
+                    Type.EmptyTypes);
 
                 var il = propertySetter.GetILGenerator();
                 il.Emit(OpCodes.Ldarg_0);
@@ -104,7 +87,7 @@ namespace Lokad.ILPack.Tests
             return propertyBuilder;
         }
 
-        private static void SerializeGenericsLibrary(string fileName)
+        private string SerializeGenericsLibrary(string fileName)
         {
             // Define assembly and module
             var assemblyName = new AssemblyName {Name = "GenericsAssembly"};
@@ -155,7 +138,7 @@ namespace Lokad.ILPack.Tests
             vectorType.DefineField("Elements", listType, FieldAttributes.Public);
             vectorType.CreateType();
 
-            SerializeAssembly(newAssembly, fileName);
+            return SerializeAssembly(newAssembly, fileName);
         }
 
         [Fact]
@@ -211,9 +194,8 @@ namespace Lokad.ILPack.Tests
         [Fact]
         public void TestFactorial()
         {
-            var assembly = SampleFactorialFromEmission.EmitAssembly(10);
-
-            SerializeAndVerifyAssembly(assembly, "SampleFactorial.dll");
+            var asm = SampleFactorialFromEmission.EmitAssembly(10);
+            SerializeAndVerifyAssembly(asm, "SampleFactorial.dll");
         }
 
         [Fact]
@@ -254,8 +236,8 @@ namespace Lokad.ILPack.Tests
         [Fact]
         public void TestGenericsType()
         {
-            SerializeGenericsLibrary("GenericsSerialization.dll");
-            VerifyAssembly("GenericsSerialization.dll");
+            var path = SerializeGenericsLibrary("GenericsSerialization.dll");
+            VerifyAssembly(path);
         }
 
         [Fact]
@@ -297,38 +279,6 @@ namespace Lokad.ILPack.Tests
             myType.CreateType();
 
             SerializeAndVerifyAssembly(newAssembly, "InlineConstructorReference.dll");
-        }
-
-        [Fact]
-        public void TestMetadataFriendlyName()
-        {
-            var type = typeof(object);
-            var ctor = type.GetConstructor(Type.EmptyTypes);
-            var method = type.GetMethod("ToString");
-
-            Assert.Equal("\"null\"", MetadataHelper.GetFriendlyName<Type>(null));
-            Assert.Equal($"\"{type.AssemblyQualifiedName}\"", MetadataHelper.GetFriendlyName(type));
-            Assert.Equal($"\"{ctor}\" of \"{ctor.DeclaringType.AssemblyQualifiedName}\"",
-                MetadataHelper.GetFriendlyName(ctor));
-            Assert.Equal($"\"{method}\" of \"{method.DeclaringType.AssemblyQualifiedName}\"",
-                MetadataHelper.GetFriendlyName(method));
-
-            var anonymousObj = new
-            {
-                NestedType = new
-                {
-                    MyField = false
-                }
-            };
-            var anonymousType = anonymousObj.GetType();
-            var anonymousNestedType = anonymousObj.NestedType.GetType();
-            var anonymousNestedProperty = anonymousNestedType.GetProperty(nameof(anonymousObj.NestedType.MyField));
-
-            Assert.Equal($"\"{anonymousType.AssemblyQualifiedName}\"", MetadataHelper.GetFriendlyName(anonymousType));
-            Assert.Equal($"\"{anonymousNestedType.AssemblyQualifiedName}\"",
-                MetadataHelper.GetFriendlyName(anonymousNestedType));
-            Assert.Equal($"\"{anonymousNestedProperty}\" of \"{anonymousNestedType.AssemblyQualifiedName}\"",
-                MetadataHelper.GetFriendlyName(anonymousNestedProperty));
         }
 
         [Fact]
@@ -512,167 +462,6 @@ namespace Lokad.ILPack.Tests
             myType.CreateType();
 
             SerializeAndVerifyAssembly(newAssembly, "TypeSerialization.dll");
-        }
-
-        private unsafe delegate int SubParamPtr(int* op1, int op2, int op3, int op4);
-
-        [Theory]
-        [InlineData(1, 2, 3, 4)]
-        public unsafe void TestParamPtr(int op1, int op2, int op3, int op4)
-        {
-            /* SAVE */
-            var assemblyBldr = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("AsmParamPtr"), AssemblyBuilderAccess.Run);
-            var moduleBldr = assemblyBldr.DefineDynamicModule("ModParamPtr");
-
-            var typeBldr = moduleBldr.DefineType("Ns.ClassParamPtr", TypeAttributes.Public);
-
-            var parameterTypes = new Type[] { typeof(int*), typeof(int), typeof(int), typeof(int) };
-            var returnType = typeof(int);
-            var methodBldr = typeBldr.DefineMethod("SubParamPtr", MethodAttributes.Public | MethodAttributes.Static, returnType, parameterTypes);
-
-            for (int i = 1; i <= 4; i++)
-            {
-                methodBldr.DefineParameter(i, ParameterAttributes.None, $"op{i}");
-            }
-
-            var ilGen = methodBldr.GetILGenerator();
-
-            ilGen.Emit(OpCodes.Ldarg_0);
-            ilGen.Emit(OpCodes.Ldind_I4);
-            ilGen.Emit(OpCodes.Ldarg_1);
-            ilGen.Emit(OpCodes.Add);
-            ilGen.Emit(OpCodes.Ldarg_2);
-            ilGen.Emit(OpCodes.Add);
-            ilGen.Emit(OpCodes.Ldarg_3);
-            ilGen.Emit(OpCodes.Add);
-            ilGen.Emit(OpCodes.Ret);
-
-            typeBldr.CreateType();
-
-            SerializeAssembly(assemblyBldr, "TestParamPtr.dll");
-
-            /* LOAD */
-            var assembly = LoadAssembly("TestParamPtr.dll");
-
-            var type = assembly.GetType("Ns.ClassParamPtr");
-
-            var methodInfo = type.GetMethod("SubParamPtr", BindingFlags.Static | BindingFlags.Public);
-
-            var parameters = methodInfo.GetParameters();
-
-            var subParamPtr = (SubParamPtr)methodInfo.CreateDelegate(typeof(SubParamPtr));
-
-            /* TESTS */
-            for (int i = 0; i < parameters.Length; i++)
-            {
-                Assert.Equal($"op{i + 1}", parameters[i].Name);
-                Assert.Equal(i == 0 ? typeof(int*) : typeof(int), parameters[i].ParameterType);
-                Assert.Equal(i, parameters[i].Position);
-            }
-
-            Assert.Equal(op1 + op2 + op3 + op4, subParamPtr(&op1, op2, op3, op4));
-        }
-
-        private delegate int SubLocalByRef();
-
-        [Theory]
-        [InlineData(256)]
-        public void TestLocalByRef(int value)
-        {
-            /* SAVE */
-            var assemblyBldr = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("AsmLocalByRef"), AssemblyBuilderAccess.Run);
-            var moduleBldr = assemblyBldr.DefineDynamicModule("ModLocalByRef");
-
-            var typeBldr = moduleBldr.DefineType("Ns.ClassLocalByRef", TypeAttributes.Public);
-
-            var methodBldr = typeBldr.DefineMethod("SubLocalByRef", MethodAttributes.Public | MethodAttributes.Static, typeof(int), null);
-
-            var ilGen = methodBldr.GetILGenerator();
-
-            var val = ilGen.DeclareLocal(typeof(int));
-            ilGen.DeclareLocal(typeof(int).MakeByRefType()); // refToVal
-
-            ilGen.Emit(OpCodes.Ldc_I4, value);
-            ilGen.Emit(OpCodes.Stloc_0);
-            ilGen.Emit(OpCodes.Ldloca_S, val);
-            ilGen.Emit(OpCodes.Stloc_1);
-            ilGen.Emit(OpCodes.Ldloc_1);
-            ilGen.Emit(OpCodes.Ldloc_0);
-            ilGen.Emit(OpCodes.Ldc_I4_2);
-            ilGen.Emit(OpCodes.Mul);
-            ilGen.Emit(OpCodes.Stind_I4);
-            ilGen.Emit(OpCodes.Ldloc_0);
-            ilGen.Emit(OpCodes.Ret);
-
-            typeBldr.CreateType();
-
-            SerializeAssembly(assemblyBldr, "TestLocalByRef.dll");
-
-            /* LOAD */
-            var assembly = LoadAssembly("TestLocalByRef.dll");
-
-            var type = assembly.GetType("Ns.ClassLocalByRef");
-
-            var methodInfo = type.GetMethod("SubLocalByRef", BindingFlags.Static | BindingFlags.Public);
-
-            var locals = methodInfo.GetMethodBody().LocalVariables;
-
-            var subLocalByRef = (SubLocalByRef)methodInfo.CreateDelegate(typeof(SubLocalByRef));
-
-            /* TESTS */
-            Assert.True(locals[0].LocalIndex == 0 && locals[0].LocalType == typeof(int));
-            Assert.True(locals[1].LocalIndex == 1 && locals[1].LocalType == typeof(int).MakeByRefType());
-
-            Assert.Equal(value * 2, subLocalByRef());
-        }
-
-        private static bool IsTinyMethod(MethodBase methodBase, bool hasDynamicStackAllocation = false)
-        {
-            var body = methodBase?.GetMethodBody() ?? throw new ArgumentNullException(nameof(methodBase));
-
-            return body.GetILAsByteArray().Length < 64 && body.MaxStackSize <= 8 &&
-                body.LocalSignatureMetadataToken == 0 && (!hasDynamicStackAllocation || !body.InitLocals) &&
-                body.ExceptionHandlingClauses.Count == 0;
-        }
-
-        [Fact]
-        public void TestIsTiny()
-        {
-            /* SAVE */
-            var assemblyBldr = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("AsmIsTiny"), AssemblyBuilderAccess.Run);
-            var moduleBldr = assemblyBldr.DefineDynamicModule("ModIsTiny");
-
-            var typeBldr = moduleBldr.DefineType("Ns.ClassIsTiny", TypeAttributes.Public);
-
-            var parameterTypes = new Type[] { typeof(int), typeof(int) };
-            var returnType = typeof(int);
-            var methodBldr = typeBldr.DefineMethod("SubIsTiny", MethodAttributes.Public | MethodAttributes.Static, returnType, parameterTypes);
-
-            methodBldr.DefineParameter(1, ParameterAttributes.None, null);
-            methodBldr.DefineParameter(2, ParameterAttributes.None, null);
-
-            var ilGen = methodBldr.GetILGenerator();
-
-            ilGen.Emit(OpCodes.Ldarg_0);
-            ilGen.Emit(OpCodes.Ldarg_1);
-            ilGen.Emit(OpCodes.Xor);
-            ilGen.Emit(OpCodes.Ret);
-
-            typeBldr.CreateType();
-
-            SerializeAssembly(assemblyBldr, "TestIsTiny.dll");
-
-            /* LOAD */
-            var assembly = LoadAssembly("TestIsTiny.dll");
-
-            var type = assembly.GetType("Ns.ClassIsTiny");
-
-            var methodInfo = type.GetMethod("SubIsTiny", BindingFlags.Static | BindingFlags.Public);
-            var constructorInfo = type.GetConstructor(Type.EmptyTypes); // Default constructor.
-
-            /* TESTS */
-            Assert.True(IsTinyMethod(methodInfo));
-            Assert.True(IsTinyMethod(constructorInfo));
         }
     }
 }
